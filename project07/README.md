@@ -1,29 +1,35 @@
 # Introduction
+A sequencer produces hundreds of millions of short DNA reads, and each one has to be located in a reference genome of billions of bases. Scanning the genome once per read is too slow, so aligners build an **index** of the reference once and then search it quickly for every read. The most widely used short-read aligners, such as Bowtie (Langmead et al., 2009), BWA (Li & Durbin, 2009) and Bowtie 2 (Langmead & Salzberg, 2012), use an FM-index built on the **Burrows–Wheeler Transform (BWT)** (Burrows & Wheeler, 1994; Ferragina & Manzini, 2005).
 
-Our program does this in three stages: 
-1. **Build the BWT:** add the end-of-string character `$`, then build the transform two ways: by sorting all rotations (naive), and from a suffix array (efficient). Both give the same string. 
-2. **Use the LF mapping:** build count and occur, then use LF to invert the BWT (one row at a time) and to search for a pattern (a range of rows at a time).” 
+The BWT of a text is made by adding an end-of-string character `$`, sorting every rotation of the text, and reading off the last column. The transform is a permutation of the text, it groups identical characters into runs, and it is reversible. The property that makes searching (and reversing) possible is the **last-to-first (LF) mapping**: the k-th occurrence of a character in the last column is the same text character as its k-th occurrence in the first column.
+
+Our program does this in three stages:
+1. **Build the BWT:** add the end-of-string character `$`, then build the transform two ways: by sorting all rotations (naive), and from a suffix array (efficient). Both give the same string.
+2. **Pattern matching with the LF mapping:** build the `count` and `occur` tables, which together give the LF mapping, then run backward search: read the pattern right to left and narrow a range of rows. The suffix array turns the final rows into positions in the text.
 3. **Compress it:** run-length encode the BWT string, and decode it back.
 
 # Documentation and Results
 
 ### Requirements
 
--   Python
+-   Python 3.14
 -   Jupyter Notebook
+-   Python standard library only: `random` (test data) and `collections.Counter`
+
 
 ### Usage
 
-Open `project07.ipynb` in Jupyter and run all cells in order, top to bottom (Kernel → Restart & Run All).\
+Open `project07.ipynb` in Jupyter and run all cells in order, top to bottom (Kernel → Restart & Run All). Each function's cell ends with its own tests, printed as `result | expected: ...`.\
 The notebook is split into:\
-Imports: `collections.Counter`\
+Test data: `generate_dna()` (a reproducible random DNA sequence)\
 Stage 1 functions: `BWT()`, `suffix_array()`, `BWT_from_suffix_array()`\
-Stage 2 functions: `inverse_BWT`, `cal_count()`, `cal_occur()`, `update_range()`, `find_match()`\
-Stage 3 functions: `run_length_encode()`, `run_length_decode()`
+Stage 2 functions: `cal_count()`, `cal_occur()`, `update_range()`, `find_match()`\
+Stage 3 functions: `run_length_encode()`, `run_length_decode()`\
+Demo: `main()` runs pattern search and compression on the DNA sequence
 
 ### Project structure
 
-```         
+```
 project07/
 ├── project07.ipynb
 ├── README.md
@@ -31,379 +37,393 @@ project07/
 
 ### Data
 
-There is no data file. We tested with short strings: - the examples in the starter notebook's docstrings (e.g. `banana`, `googol`, `ATGACG`), and the lecture example `GCTACATTACATACATACATAC`
+There is no data file. We tested with:
+- the examples in the starter notebook's docstrings (e.g. `banana`, `googol`, `ATGACG`, `AG$CG`)
+- a reproducible 150-bp random DNA sequence, `generate_dna(150, seed=42)`, so the outputs are the same every run
 
-### Output
+### Checks
 
-### Note about the materials:
+Pattern-matching tests (the assignment asks for a pattern that occurs once, several times, overlaps itself, and does not occur):
+
+| Case | Query | Result |
+|---|---|---|
+| Occurs once | `dna[10:20]` = `'AGAAGGAGTA'` | `[10]` |
+| Occurs several times | `'GAC'` | `[0, 57, 105, 123, 147]` |
+| Occurs several times | `'CATT'` | `[69, 125, 130, 135]` |
+| Overlaps itself | `'ana'` in `banana` | `[1, 3]`: the match at 1 (positions 1–3) and the match at 3 (positions 3–5) share position 3 |
+| Does not occur | `'TTTT'` | `[]` |
+| Character not in the reference | `'NNN'`, and `'xyz'` in `banana` | `[]` |
+| Docstring example | `'na'` in `banana` | `[2, 4]` |
+
+Checking the inverse: the notebook has no separate inverse function. Reversibility follows from the LF mapping (see the pseudocode's *Checking the inverse* section). Traced by hand for `banana`, rows 0 → 1 → 5 → 2 → 6 → 3 → 4 rebuild `banana$`.
+
+### Design questions
+
+**Inputs, outputs, and the BWT property each function relies on:**
+
+| # | Function | Inputs → Output | Property it relies on |
+|---|---|---|---|
+| 1 | `BWT` | text → BWT string | The definition: sort the rotations, take the last column|
+| 2 | `suffix_array` | text → sorted suffix positions | With a unique, smallest `$`, suffixes sort in the same order as rotations |
+| 3 | `BWT_from_suffix_array` | text, suffix array → BWT string | The last character of each row comes just before its first character in the text, so BWT[i] = text[SA[i] − 1] |
+| 4 | `cal_count` | text without `$` → `{char: block start}` | The first column is the text sorted, so each character's rows form one block |
+| 5 | `cal_occur` | BWT → `{char: running tally}` | LF needs "which occurrence" a character is (1st, 2nd, …) |
+| 6 | `update_range` | range, `count`, `occur`, char → new range | LF mapping applied to the top and bottom of a block of rows |
+| 7 | `find_match` | query, reference without `$` → positions | Every match is a prefix of some suffix, and those rows form one block; LF walks backward, so the query is read right to left |
+| 8 | `run_length_encode` | BWT → encoded string | The BWT groups identical characters into runs |
+| 9 | `run_length_decode` | encoded string → BWT | None of its own (plain run-length decoding); it gives back the exact BWT |
 
 # Pseudocode
-# We will use the example text = banana for demostrating
-## Stage 1: Build the BWT
+The `# Check` lines are the notebook's tests: the docstring examples first, then the reproducible 150-bp random DNA sequence (`dna_seq = generate_dna(150, seed=42)`).
 
-```         
-   #example input: text = 'banana$'
-   ##check include the walk through banana example and others in the notebook doctring. 
+## Setup: test data
+0. Generate a random DNA sequence
+```
+def generate_dna(length = 150, seed = 42):
+    #1. Fix the random seed
+    # same seed => same sequence every run, so test outputs are reproducible
+    set the random seed to seed
+
+    #2. Pick length random bases from A, C, G, T and join them
+    return a string of length random choices from "ACGT"
+
+    # Check: generate_dna() -> 150 bp, starting 'GACAGGTACAAGAAGGAGTA...'
 ```
 
-1.  BWT (sort rotations)
-
-```         
+## Stage 1: Build the BWT
+1. BWT (sort rotations)
+```
 def BWT(string):
     #1. Add the stop sign $ only if it's missing
-    # for the example: 'banana$' already has $, so nothing changes
+    # first check: '$' may appear at most once, and only at the end (raise an error if not)
+    if string has more than one '$', or a '$' that is not at the end:
+        raise an error
     if string does not end with '$':
         string = string + '$'
 
-    #2. Build every cyclic rotation
-    # rotation k = string[k:] + string[:k]
-    # for the example: banana$ => anana$b, etc. until $banana
+    #2. Build every rotation: add the current one, then move its first letter to the back
     rotations = empty list
-    for k from 0 to len(string) - 1:
-        append string[k:] + string[:k] to rotations
+    current = string
+    for each character in string:
+        append current to rotations
+        current = current[1:] + current[0]
 
-    #3. Sort rotations lexicographically,
-    # meaning via character code number and letter by letter
-    # ord() gives each character a number: $ = 36, a = 97, b = 98, n = 110
-    # use .sort(), this already compares with ord()
-    # for the example: $banana < a$banan < ... < nana$ba
+    #3. Sort rotations lexicographically
+    # .sort() compares letter by letter using ord(): $ = 36, a = 97, b = 98, n = 110
     sort rotations
 
-    #4. Take the LAST character of each row
-    # for the example, expected: 'annb$aa'
-    result = ""
-    for each row in rotations:
-        result = result + last character of row
-    return result
+    #4. Take the LAST character of each sorted rotation
+    bwt = join the last character of every rotation
+    return bwt
 
-    # Check: BWT('banana$')                -> 'annb$aa'
-    #        BWT('googol')                 -> 'lo$oogg'
-    #        BWT('GCTACATTACATACATACATAC') -> 'CTTTTTCCCCAAAAAG$AAATCA'
+    # Check: BWT('googol')  -> 'lo$oogg'
+    #        BWT('banana$') -> 'annb$aa'
+    #        BWT(dna_seq)   -> length 151 (= 150 + 1 for '$')
 ```
-
-2.  Suffix array
-
-```         
+2. Suffix array
+```
 def suffix_array(string):
     #1. Add the stop sign $ only if it's missing
-    # for the example: 'banana$' already has $, so nothing changes
+    # first check: '$' may appear at most once, and only at the end (raise an error if not)
+    if string has more than one '$', or a '$' that is not at the end:
+        raise an error
     if string does not end with '$':
         string = string + '$'
 
-    #2. List every suffix, paired with where it starts
-    # suffix i = from position i to the end
-    # the number is the label that travels with the suffix through the sort
-    # for the example: ('banana$', 0), ('anana$', 1), etc. until ('$', 6)
+    #2. Make one (suffix, position) pair per starting position
     pairs = empty list
     for i from 0 to len(string) - 1:
         append (string[i:], i) to pairs
 
-    #3. Sort the pairs by the suffix, lexicographically
-    # pairs sort by their first item (the suffix); suffixes never tie
-    # for the example: ('$', 6) < ('a$', 5) < ... < ('nana$', 2)
+    #3. Sort by the suffix (the first item of each pair)
     sort pairs
 
-    #4. Keep only the starting positions
-    # throw away the suffix text, keep the label
-    # for the example, expected: [6, 5, 3, 1, 0, 4, 2]
-    positions = empty list
-    for each (suffix, i) in pairs:
-        append i to positions
+    #4. Keep only the positions, in sorted order
+    positions = the second item of every pair
     return positions
 
-    # Check: suffix_array('banana$') -> [6, 5, 3, 1, 0, 4, 2]
-    #        suffix_array('googol')  -> [6, 3, 0, 5, 2, 4, 1]
+    # Check: suffix_array('googol')  -> [6, 3, 0, 5, 2, 4, 1]
+    #        suffix_array('banana$') -> [6, 5, 3, 1, 0, 4, 2]
+    #        suffix_array(dna_seq)[0] == 150   (the '$' suffix always sorts first)
 ```
-
-3.  BWT from the suffix array
-
-```         
+3. BWT from the suffix array
+```
 def BWT_from_suffix_array(text, suffix_positions):
-    # suffix_positions is passed in (from suffix_array(text)), not built here
-    # text must already end with '$'
-    # for the example: text = 'banana$', suffix_positions = [6, 5, 3, 1, 0, 4, 2]
+    # suffix_positions comes from suffix_array(text)
 
-    #1. Start with an empty result
-    result = ""
+    #1. Add the stop sign $ only if it's missing (same as BWT and suffix_array)
+    # first check: '$' may appear at most once, and only at the end (raise an error if not)
+    if text has more than one '$', or a '$' that is not at the end:
+        raise an error
+    if text does not end with '$':
+        text = text + '$'
+    bwt = ""
 
-    #2. For each sorted suffix, take the letter just BEFORE it
-    # BWT[i] = text[SA[i] - 1]
-    # p = 0 means nothing is before it, so wrap around to the last letter, '$'
-    # for the example: p = 6 => text[5] = 'a'; p = 5 => text[4] = 'n'; etc.; p = 0 => '$'
+    #2. For each position p in the suffix array, take the character right before p
+    # BWT[i] = text[SA[i] - 1]; p = 0 has nothing before it, so wrap to the last char ($)
     for each p in suffix_positions:
         if p == 0:
-            result = result + last character of text
+            char = last character of text
         else:
-            result = result + text[p - 1]
+            char = text[p - 1]
+        bwt = bwt + char
 
-    #3. Give back the BWT string
-    # for the example, expected: 'annb$aa'
-    return result
+    #3. Return the finished BWT
+    return bwt
 
     # Check: BWT_from_suffix_array('banana$', [6, 5, 3, 1, 0, 4, 2]) -> 'annb$aa'
     #        BWT_from_suffix_array('googol$', [6, 3, 0, 5, 2, 4, 1]) -> 'lo$oogg'
-    #        BWT_from_suffix_array(text, suffix_array(text)) == BWT(text)   (way 1 == way 2)
+    #        BWT_from_suffix_array(dna_seq + '$', suffix_array(dna_seq)) == BWT(dna_seq) -> True
 ```
 
-## Stage 2: Use the LF mapping
-
-```         
-   #example: from Stage 1, text = 'banana$', BWT = 'annb$aa', SA = [6, 5, 3, 1, 0, 4, 2]
-   #LF(row) = count[c] + occur[c][row], where c = last letter of the row
-   #the k-th c in the last column is the k-th c in the first column
+## Stage 2: Pattern matching (with the LF mapping)
 ```
-LF cheat sheets (used by both invert and pattern matching)
+   #LF mapping: the k-th c in the last column is the k-th c in the first column
+   #data structures: count[c]      = where c's block starts in the first column  (function 4)
+   #                 occur[c][row] = which c it is (1st, 2nd, ...), counting THROUGH row  (function 5)
+   #so the k-th c sits in row count[c] + k, and LF(row) = count[c] + occur[c][row]
+```
 4. Count dictionary
-``` 
+```
 def cal_count(string):
-    #1. Count how many times each letter appears
+    #1. Count how many times each character shows up
     # use Counter
-    # for the example: a = 3, b = 1, n = 2
-    freq = frequency of each letter in string
+    char_counts = Counter(string)
 
-    #2. Go through the letters in lexicographical order
-    # count[c] = how many letters come BEFORE c (where c's group starts), leaving out '$'
-    # save letters_before first, then add c's own letters for the next letter
-    # for the example: a => 0 (nothing before a)
-    #                  b => 3 (3 a's before b)
-    #                  n => 4 (3 a's + 1 b before n)
+    #2. Walk through the characters in lexicographical order
+    # store the running total FIRST (only smaller characters counted so far),
+    # then add this character's own count for the next one
+    running_total = 0
     count = empty dictionary
-    letters_before = 0
-    for each letter c in sorted(freq):
-        if c is '$':
-            skip it
-        count[c] = letters_before
-        letters_before = letters_before + freq[c]
+    for each char in sorted(char_counts):
+        count[char] = running_total
+        running_total = running_total + char_counts[char]
 
-    #3. Give back the dictionary
-    # for the example, expected: {'a': 0, 'b': 3, 'n': 4}
+    #3. Return the finished dictionary
     return count
 
-    # Check: cal_count('banana') -> {'a': 0, 'b': 3, 'n': 4}
-    #        cal_count('ATGACG') -> {'A': 0, 'C': 2, 'G': 3, 'T': 5}
-```      
+    # Check: cal_count('ATGACG') -> {'A': 0, 'C': 2, 'G': 3, 'T': 5}
+    #        cal_count('banana') -> {'a': 0, 'b': 3, 'n': 4}
+    #        cal_count(dna_seq)  -> {'A': 0, 'C': 41, 'G': 74, 'T': 114}
+    # Note: '$' is not skipped, so call it on the reference WITHOUT '$'
+    # this is the "where c's block starts" half of the LF mapping
+```
 5. Occur dictionary
 ```
 def cal_occur(bwt_string):
-    #1. Make a list of zeros for every letter in the BWT
-    # for the example: 'annb$aa' has $, a, b, n => 4 lists of 7 zeros
-    occur = for every letter c in bwt_string: a list of len(bwt_string) zeros
+    #1. Give each unique character its own list of zeros
+    alphabet = sorted unique characters of bwt_string
+    occur = for each char in alphabet: a list of len(bwt_string) zeros
 
-    #2. Walk along the BWT, keeping a running tally
+    #2. Walk the BWT one position at a time
+    # copy every tally from the previous position (position 0 has nothing to copy),
+    # then add 1 for the character sitting at this position
     # occur[c][i] = how many c's from position 0 THROUGH position i
-    # this tells LF "which one" a letter is (1st, 2nd, 3rd ...)
-    # copy every letter's count from the previous position, then add 1 for the letter at i
-    # for the example: i = 0 is 'a' => a: [1, ...]
-    #                  i = 1 is 'n' => n: [0, 1, ...]
-    #                  i = 2 is 'n' => n: [0, 1, 2, ...], etc. until i = 6
     for i from 0 to len(bwt_string) - 1:
-        for each letter c in occur:
-            if i > 0:
-                occur[c][i] = occur[c][i - 1]
+        if i > 0:
+            for each char in alphabet:
+                occur[char][i] = occur[char][i - 1]
         occur[bwt_string[i]][i] = occur[bwt_string[i]][i] + 1
 
-    #3. Give back the dictionary
-    # for the example, expected: {'$': [0, 0, 0, 0, 1, 1, 1],
-    #                             'a': [1, 1, 1, 1, 1, 2, 3],
-    #                             'b': [0, 0, 0, 1, 1, 1, 1],
-    #                             'n': [0, 1, 2, 2, 2, 2, 2]}
+    #3. Return the finished table
+    # this is the "which occurrence" half of the LF mapping
     return occur
 
-    # Check: cal_occur('annb$aa') -> {'$': [0, 0, 0, 0, 1, 1, 1], 'a': [1, 1, 1, 1, 1, 2, 3],
-    #                                 'b': [0, 0, 0, 1, 1, 1, 1], 'n': [0, 1, 2, 2, 2, 2, 2]}
-    #        cal_occur('AG$CG')   -> {'$': [0, 0, 1, 1, 1], 'A': [1, 1, 1, 1, 1],
+    # Check: cal_occur('AG$CG')   -> {'$': [0, 0, 1, 1, 1], 'A': [1, 1, 1, 1, 1],
     #                                 'C': [0, 0, 0, 1, 1], 'G': [0, 1, 1, 1, 2]}
+    #        cal_occur('annb$aa') -> as in the example above
+    #                                (the notebook's docstring shows a different answer)
+    #        the last tally of each letter in cal_occur(BWT(dna_seq)) equals its count in the BWT:
+    #        {'$': 1, 'A': 41, 'C': 33, 'G': 40, 'T': 36}
 ```
-Invert
-6. Invert the BWT
-```     
-def inverse_BWT(bwt_string):
-    #1. Build the LF cheat sheets
-    # use cal_count and cal_occur on the BWT (it has the same letters as the text)
-    # for the example: count = {'a': 0, 'b': 3, 'n': 4}, occur as in function 5
-    count = cal_count(bwt_string)
-    occur = cal_occur(bwt_string)
-
-    #2. Start in row 0, the row that starts with '$'
-    # '$' is the end of the text, so the result starts as '$'
-    row = 0
-    result = "$"
-
-    #3. Walk backward with LF until the last letter is '$'
-    # the last letter of a row comes just BEFORE its first letter, so put it on the front
-    # then jump to the row that starts with that letter: row = count[c] + occur[c][row]
-    # for the example: row 0: 'a' => 'a$',      LF = 0 + 1 = row 1
-    #                  row 1: 'n' => 'na$',     LF = 4 + 1 = row 5
-    #                  row 5: 'a' => 'ana$',    LF = 0 + 2 = row 2
-    #                  row 2: 'n' => 'nana$',   LF = 4 + 2 = row 6
-    #                  row 6: 'a' => 'anana$',  LF = 0 + 3 = row 3
-    #                  row 3: 'b' => 'banana$', LF = 3 + 1 = row 4
-    #                  row 4: '$' => stop
-    while bwt_string[row] is not '$':
-        c = bwt_string[row]
-        result = c + result
-        row = count[c] + occur[c][row]
-
-    #4. Give back the original text
-    # for the example, expected: 'banana$'
-    return result
-
-    # Check: inverse_BWT('annb$aa')                 -> 'banana$'
-    #        inverse_BWT('lo$oogg')                 -> 'googol$'
-    #        inverse_BWT('CTTTTTCCCCAAAAAG$AAATCA') -> 'GCTACATTACATACATACATAC$'
-    #        inverse_BWT(BWT(text)) == text         (inverse really inverts the forward transform)
-```         
-Pattern matching
+6. Update the range
 ```
-   #example: reference = 'banana', query = 'ana'
-```
-7. Update the range
-```         
 def update_range(lower, upper, count, occur, a):
-    #1. Count the a's ABOVE the range
-    # if lower is 0, nothing is above, so use 0
-    # for the example (reading 'n', range = rows 1–3): occur['n'][0] = 0
+    #1. Tally of a just BEFORE the range starts
+    # if lower is 0 there is nothing before it, so use 0 (not occur[a][-1])
     if lower == 0:
-        before = 0
+        tally_before = 0
     else:
-        before = occur[a][lower - 1]
+        tally_before = occur[a][lower - 1]
 
-    #2. New lower = row of the FIRST a in the range (LF of the top)
-    # the first a in the range is the (before + 1)-th a; the +1 also skips the '$' row
-    # for the example: 4 + 0 + 1 = 5
-    new_lower = count[a] + before + 1
+    #2. Tally of a at the END of the range
+    tally_end = occur[a][upper]
 
-    #3. New upper = row of the LAST a in the range (LF of the bottom)
-    # occur[a][upper] = a's from the top THROUGH the bottom of the range
-    # for the example: 4 + occur['n'][3] = 4 + 2 = 6
-    new_upper = count[a] + occur[a][upper]
+    #3. New lower: jump to a's block in the first column (+1 for the '$' row), skip earlier a's
+    # = row of the FIRST a in the range (LF of the top)
+    new_lower = count[a] + 1 + tally_before
 
-    #4. Give back the new range
-    # if there are no a's in the range, new_lower = new_upper + 1 (empty)
-    # for the example, expected: (5, 6) => rows 5–6 start with 'na'
+    #4. New upper: the last a inside the range
+    # = row of the LAST a in the range (LF of the bottom)
+    new_upper = count[a] + tally_end
+
+    #5. Return the new range
     return (new_lower, new_upper)
 
-    # Check (banana): update_range(0, 6, count, occur, 'a') -> (1, 3)
-    #                 update_range(1, 3, count, occur, 'n') -> (5, 6)
-    #                 update_range(5, 6, count, occur, 'a') -> (2, 3)
+    # Check (banana, 'ana' right to left): update_range(0, 6, ..., 'a') -> (1, 3)
+    #                                      update_range(1, 3, ..., 'n') -> (5, 6)
+    #                                      update_range(5, 6, ..., 'a') -> (2, 3)
+    #        DNA, whole table (rows 0–150), one base each: block size = that base's count
+    #        'A' -> rows 1–41 (41), 'C' -> rows 42–74 (33), 'G' -> rows 75–114 (40), 'T' -> rows 115–150 (36)
 ```
-8. Find matches
+7. Find matches
 ```
 def find_match(query, reference):
-    #1. Build the index (once per reference)
-    # add '$', then use functions 2, 3, 4, 5
-    # for the example: text = 'banana$', SA = [6, 5, 3, 1, 0, 4, 2], BWT = 'annb$aa'
+    #1. Add $, then build the suffix array and the BWT
     text = reference + '$'
-    suffix_positions = suffix_array(text)
-    bwt = BWT_from_suffix_array(text, suffix_positions)
+    sa = suffix_array(text)
+    bwt = BWT_from_suffix_array(text, sa)
+
+    #2. Count from the plain reference, occur from the BWT
     count = cal_count(reference)
     occur = cal_occur(bwt)
 
-    #2. Start with every row
-    # for the example: lower = 0, upper = 6
+    #3. Start with every row as a possible match
     lower = 0
     upper = len(bwt) - 1
 
-    #3. Read the query backwards, narrowing the range (per query)
-    # backwards because LF walks backward through the text
-    # stop if a letter isn't in the text, or the range becomes empty (lower > upper)
-    # for the example: 'a' => (1, 3), rows starting with 'a'
-    #                  'n' => (5, 6), rows starting with 'na'
-    #                  'a' => (2, 3), rows starting with 'ana'
-    for each letter a in reversed(query):
-        if a is not in count:
+    #4. Read the query from right to left, shrinking the range
+    # stop if a letter isn't in the reference, or the range becomes empty (lower > upper)
+    for each letter in reversed(query):
+        if letter is not in count:
             return empty list
-        (lower, upper) = update_range(lower, upper, count, occur, a)
+        (lower, upper) = update_range(lower, upper, count, occur, letter)
         if lower > upper:
             return empty list
 
-    #4. Turn the rows into positions with the suffix array, then sort
-    # for the example: rows 2, 3 => SA[2] = 3, SA[3] = 1 => [1, 3]
+    #5. Turn the remaining rows into positions using the suffix array, then sort
     positions = empty list
     for each row from lower to upper:
-        append suffix_positions[row] to positions
+        append sa[row] to positions
     return sorted(positions)
 
-    # Check: find_match('ana', 'banana')                    -> [1, 3]
-    #        find_match('xyz', 'banana')                    -> []
-    #        find_match('GCTA',   'GCTACATTACATACATACATAC') -> [0]           (occurs once)
-    #        find_match('ACATAC', 'GCTACATTACATACATACATAC') -> [8, 12, 16]   (several times, overlapping)
-    #        find_match('ACATG',  'GCTACATTACATACATACATAC') -> []            (does not occur)
+    # Check: find_match('ana', 'banana') -> [1, 3]                       (overlaps itself: both matches use position 3)
+    #        find_match('xyz', 'banana') -> []
+    #        find_match('na', 'banana')  -> [2, 4]
+    #        DNA: dna_seq[10:20] = 'AGAAGGAGTA' -> [10]                        (occurs once)
+    #             'GAC'    -> [0, 57, 105, 123, 147]                          (several times)
+    #             'CATT'   -> [69, 125, 130, 135]                              (several times)
+    #             'TTTT'   -> []                                               (does not occur)
+    #             'NNN'    -> []                                               (letter not in the reference)
 ```
+
 ## Stage 3: Compress
 ```
-   #example input: bwt_string = 'annb$aa'
+   #format: the count goes BEFORE the character, and a count of 1 is left out
 ```
-9.  Run-length encode
+8. Run-length encode
 ```
 def run_length_encode(bwt_string):
-    #1. Empty in, empty out
+    #1. Nothing to encode
     if bwt_string is empty:
         return ""
 
-    #2. Remember the first letter, and count it once
-    # for the example: current = 'a', run = 1
+    #2. Start tracking the first character
     encoded = ""
-    current = first letter of bwt_string
-    run = 1
+    current_char = first character of bwt_string
+    current_count = 1
 
-    #3. Walk through the rest of the letters
-    # same letter => run gets longer; different letter => write down the run, start a new one
-    # for the example: 'n' => write 'a1', 'n' => run = 2, 'b' => write 'n2',
-    #                  '$' => write 'b1', 'a' => write '$1', 'a' => run = 2
-    for each next letter x in bwt_string:
-        if x == current:
-            run = run + 1
+    #3. Go through the rest of the string
+    # same letter => the run keeps going
+    # different letter => the run ended: write it out (count first, only if > 1), then track the new letter
+    for each char in bwt_string, starting from the second:
+        if char == current_char:
+            current_count = current_count + 1
         else:
-            encoded = encoded + current + run
-            current = x
-            run = 1
+            if current_count > 1:
+                encoded = encoded + current_count + current_char
+            else:
+                encoded = encoded + current_char
+            current_char = char
+            current_count = 1
 
-    #4. Write down the last run
-    # for the example: write 'a2'
-    encoded = encoded + current + run
+    #4. Write out the last run (it never reaches the else above)
+    if current_count > 1:
+        encoded = encoded + current_count + current_char
+    else:
+        encoded = encoded + current_char
 
-    # for the example, expected: 'a1n2b1$1a2'
     return encoded
 
-    # Check: run_length_encode('annb$aa')                 -> 'a1n2b1$1a2'
-    #        run_length_encode('aaabbc')                  -> 'a3b2c1'
-    #        run_length_encode('CTTTTTCCCCAAAAAG$AAATCA') -> 'C1T5C4A5G1$1A3T1C1A1'
-```         
-10. Run-length decode
+    # Check: run_length_encode('aaabbc')  -> '3a2bc'
+    #        run_length_encode('annb$aa') -> 'a2nb$2a'
+    #        run_length_encode('')        -> ''
+    #        run_length_encode(BWT(dna_seq)) -> 151 chars become 143
+```
+9. Run-length decode
 ```
 def run_length_decode(encoded):
-    #1. Start with an empty result, reading from the start
+    #1. Start with an empty output, and a place to hold digits not used yet
     decoded = ""
-    i = 0
+    digits = ""
 
-    #2. Read a letter, then ALL the digits after it, then repeat the letter that many times
-    # read every digit, because a run can be 10 or longer
-    # for the example: 'a1' => 'a', 'n2' => 'nn', 'b1' => 'b', '$1' => '$', 'a2' => 'aa'
-    while i < len(encoded):
-        symbol = encoded[i]
-        i = i + 1
-        j = i
-        while j < len(encoded) and encoded[j] is a digit:
-            j = j + 1
-        decoded = decoded + symbol repeated int(encoded[i:j]) times
-        i = j
+    #2. Go through the encoded string one character at a time
+    # a digit => part of a count, but more digits might follow, so hold onto it
+    # a letter => the count in front of it is complete (none means 1): repeat the letter, clear the digits
+    for each char in encoded:
+        if char is a digit:
+            digits = digits + char
+        else:
+            if digits is empty:
+                repeat = 1
+            else:
+                repeat = int(digits)
+            decoded = decoded + char repeated repeat times
+            digits = ""
 
-    #3. Give back the decoded string
-    # for the example, expected: 'annb$aa'
+    #3. Return the rebuilt string
     return decoded
 
-    # Check: run_length_decode('a1n2b1$1a2')           -> 'annb$aa'
-    #        run_length_decode('a3b2c1')               -> 'aaabbc'
-    #        run_length_decode('C1T5C4A5G1$1A3T1C1A1') -> 'CTTTTTCCCCAAAAAG$AAATCA'
-```         
+    # Check: run_length_decode('3a2bc')   -> 'aaabbc'
+    #        run_length_decode('a2nb$2a') -> 'annb$aa'
+    #        run_length_decode('12a')     -> 12 a's
+    #        run_length_decode(run_length_encode(BWT(dna_seq))) == BWT(dna_seq) -> True
+```
 
+## Putting it together
+10. Main
+```
+def main(reference, queries):
+    #1. Show the reference
+    print the reference and its length
 
+    #2. Pattern search
+    # find_match builds the suffix array, BWT, count and occur inside
+    for each q in queries:
+        print q and find_match(q, reference)
+
+    #3. Compress the BWT and check the round trip
+    text = reference + '$'
+    bwt = BWT_from_suffix_array(text, suffix_array(text))
+    encoded = run_length_encode(bwt)
+    print the length before and after, and the encoded string
+    print whether run_length_decode(encoded) == bwt
+
+    # Check: main(generate_dna(150, seed=42), [reference[10:20], 'GAC', 'CATT', 'TTTT'])
+    #        -> [10], [0, 57, 105, 123, 147], [69, 125, 130, 135], []; 151 -> 143 chars; True
+```
+## Checking the inverse (no separate inverse function)
+```
+Reversibility follows from the LF mapping. Starting in the $ row and repeatedly applying LF(row) = count[c] + occur[c][row] rebuilds the text backward, one character at a time.
+The notebook does not run this walk, but every piece it needs is already in the code:
+count[c] (where c’s block starts) comes from cal_count(), function 4
+occur[c][row] (which occurrence c is) comes from cal_occur(), function 5
+the same LF formula is used in update_range(), function 6, steps #3 and #4 (“LF of the top” and “LF of the bottom”), where it moves a whole block of rows instead of one row.
+```
 # Successes
+Our biggest success was making sure the program is correct, not just that it runs. Instead of relying only on the starter examples, we checked our work in ways that would expose mistakes: two completely different methods of building the BWT produce the same result, the search handles every case the assignment asks for (including overlapping matches and patterns that are absent), and compressed data decodes back exactly. Using a reproducible DNA sequence means anyone can rerun the notebook and get the same results we report.\
+We also came away understanding why the algorithm works. The last-to-first mapping turned out to be the idea that ties everything together, and once we understood it, both searching and reversing the transform made sense. Along the way, we caught problems the starter materials didn’t warn about, like a boundary case that breaks silently in Python, and we made the code reject bad input instead of producing wrong answers.
 
 # Struggles
 
 **Note on overall limitations of our program:**
+- **Case-sensitive:** `'ANA'` does not find `'ana'`. Uppercase both first if case should not matter. Real genomes may be soft-masked (repeats in lowercase).
+- **`cal_count()` does not skip `$`**, so it must be called on the reference without `$`.
+- **`find_match()` adds its own `$`:** the reference must not contain `$`. `find_match('ana', 'banana$')` raises an error (the reference would end in two `$`).
+- **Empty query:** `find_match('', reference)` returns every position, including the `$` position.
+- **Index is rebuilt per query:** `find_match()` builds the suffix array, BWT, `count` and `occur` on every call.
+- **Memory:** the naive BWT stores n rotations of length n; our simple `suffix_array()` also creates every suffix while sorting, so it is faster than the naive BWT but not truly O(n log n). Fast suffix sorting needs special algorithms. `occur` stores a count for every row.
+- **Run-length encoding:** a text containing digits would break decoding; and on short inputs, or text without long runs, the encoding barely helps. On the random 150-bp DNA, the BWT went from 151 to 143 characters, because random DNA has little repeated structure. The paper finds the BWT needs large blocks to compress well - "a few kilobytes" (Burrows & Wheeler, 1994).
 
 **Things we still don't understand:**
 
