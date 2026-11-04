@@ -432,6 +432,7 @@ We also came away understanding why the algorithm works. The last-to-first mappi
 ## Group Leader
 
 ## Other members
+Mara: The walkthrough provided by Marcus was extremely helpful in understanding the basis of the BWT. The principles behind the suffix array, doing the transform, and encoding/decoding were fairly straightforward once I sat down with a pencil and paper and did them by hand. The pattern-matching was the hardest part for me to understand conceptually. My group members were a fantastic team, and Trang was an excellent group leader. 
 
 # Generative AI Appendix
 
